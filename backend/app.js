@@ -139,8 +139,11 @@ let db;
 let announcements, portfolio, serviceRequests, contactMessages, events;
 
 async function initDatabase() {
+  const mongoUri = process.env.MONGO_URI;
+  if (!mongoUri) {
+    throw new Error('MONGO_URI environment variable is not set. Please configure it in Render\'s environment settings.');
+  }
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb+srv://4k-production:4k-production@4k-production.i0zgwjv.mongodb.net/?appName=4k-production';
     db = monk(mongoUri);
 
     // monk returns a promise-like; wait for connection
@@ -315,8 +318,17 @@ function normalizeDocs(docs) {
 // =============================================
 app.get('/health', (_req, res) => res.json({
   success: true, message: '4K Production API running',
+  dbReady: !!db,
   timestamp: new Date().toISOString(), version: '2.1.0'
 }));
+
+// Guard: return 503 for any /api/* route if DB is not yet connected
+app.use('/api', (req, res, next) => {
+  if (!db || !announcements) {
+    return res.status(503).json({ success: false, message: 'Database is initializing, please retry in a moment.' });
+  }
+  next();
+});
 
 // =============================================
 // Desktop Auto-Auth (one-shot session endpoint)
@@ -942,16 +954,39 @@ app.use((err, _req, res, _next) => {
 });
 
 // =============================================
-// Boot
+// Boot — server starts first, then DB connects
+// This ensures Render always detects an open port
 // =============================================
 async function start() {
-  await initDatabase();
   initMailer();
-  app.listen(PORT, () => {
-    console.log(`\n4K Production API v2.1 (MongoDB) on port ${PORT}`);
-    console.log('Desktop auto-auth: ' + (process.env.DESKTOP_AUTH_TOKEN ? 'ENABLED ✓' : 'NOT CONFIGURED'));
-    console.log('File uploads: ENABLED ✓');
-    console.log(`Uploads directory: ${uploadsDir}`);
+
+  // Start HTTP server FIRST so Render can detect the port
+  await new Promise((resolve) => {
+    app.listen(PORT, () => {
+      console.log(`\n4K Production API v2.1 (MongoDB) on port ${PORT}`);
+      console.log('Desktop auto-auth: ' + (process.env.DESKTOP_AUTH_TOKEN ? 'ENABLED ✓' : 'NOT CONFIGURED'));
+      console.log('File uploads: ENABLED ✓');
+      console.log(`Uploads directory: ${uploadsDir}`);
+      resolve();
+    });
   });
+
+  // Then connect to MongoDB with retry logic
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await initDatabase();
+      break; // success
+    } catch (err) {
+      retries--;
+      console.error(`MongoDB connection failed (${retries} retries left):`, err.message);
+      if (retries === 0) {
+        console.error('Could not connect to MongoDB after multiple attempts. Check MONGO_URI in environment variables.');
+        process.exit(1);
+      }
+      // Wait 5 seconds before retrying
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
 }
 start().catch(err => { console.error('Failed to start:', err); process.exit(1); });
