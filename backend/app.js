@@ -119,10 +119,12 @@ app.use(session({
     autoRemove:       'native'
   }),
   cookie: {
+    // SameSite=None + Secure is required for cross-origin requests (Vercel → Render).
+    // In development (localhost) SameSite=Lax is fine and doesn't need HTTPS.
     secure:   process.env.NODE_ENV === 'production',
     httpOnly: true,
     maxAge:   30 * 24 * 60 * 60 * 1000,
-    sameSite: 'lax'
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
   }
 }));
 
@@ -390,7 +392,13 @@ app.post('/api/admin/login',
       req.session.isAdmin   = true;
       req.session.adminUser = username;
       req.session.loginTime = new Date().toISOString();
-      return res.json({ success: true, message: 'Logged in successfully', user: { username, role: 'admin' } });
+      // Explicitly save session before responding so it is persisted to MongoDB
+      // before the client's next request (e.g. GET /admin/me in the route guard).
+      req.session.save((saveErr) => {
+        if (saveErr) return res.status(500).json({ success: false, message: 'Session error, please try again.' });
+        return res.json({ success: true, message: 'Logged in successfully', user: { username, role: 'admin' } });
+      });
+      return; // response handled in callback
     }
     return res.status(401).json({ success: false, message: 'Invalid credentials' });
   })

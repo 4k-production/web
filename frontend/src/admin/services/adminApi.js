@@ -45,11 +45,13 @@ adminApi.interceptors.response.use(
   response => response.data,
   error => {
     if (error.response?.status === 401) {
-      if (isElectron) {
-        window.location.hash = '#/admin/login'
-      } else {
-        window.location.href = '/admin/login'
-      }
+      // Use Vue Router for the redirect so there is no full-page reload.
+      // Dynamic import avoids a circular dependency with the router module.
+      import('@/router/index.js').then(({ default: router }) => {
+        if (router.currentRoute.value.name !== 'AdminLogin') {
+          router.push('/admin/login')
+        }
+      })
     }
     const message = error.response?.data?.message || error.message || 'An error occurred'
     return Promise.reject(new Error(message))
