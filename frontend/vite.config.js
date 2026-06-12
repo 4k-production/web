@@ -20,17 +20,17 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target:       'https://4k-production.onrender.com',
+        target:       'https://fourk-production.onrender.com',
         changeOrigin: true,
         secure:       false
       },
       '/uploads': {
-        target:       'https://4k-production.onrender.com',
+        target:       'https://fourk-production.onrender.com',
         changeOrigin: true,
         secure:       false
       },
       '/health': {
-        target:       'https://4k-production.onrender.com',
+        target:       'https://fourk-production.onrender.com',
         changeOrigin: true
       }
     }

@@ -23,7 +23,7 @@ function resolveApiBase() {
   // (fallback to hardcoded localhost — never use relative /api in Electron)
   if (isElectron) {
     console.warn('[AdminAPI] Electron detected but electronConfig not available, using localhost fallback')
-    return 'https://4k-production.onrender.com/api'
+    return 'https://fourk-production.onrender.com/api'
   }
 
   // Priority 3: Browser — use Vite env var or dev proxy

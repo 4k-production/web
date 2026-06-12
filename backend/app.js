@@ -1,17 +1,14 @@
 /**
- * 4K Production - Backend API Server v2.1
- * Single-file Express with MongoDB (Monk), Session Auth, Nodemailer, File Uploads
- * + Desktop auto-auth (token-based per-request for Electron)
- * + Multer for file uploads (portfolio, announcements, events)
- *
- * MIGRATED: MySQL → MongoDB via Monk
+ * 4K Production - Backend API Server v2.2
+ * Express + MongoDB (native driver) + connect-mongo sessions
+ * Fixes: deprecated Monk/MemoryStore warnings on Node 24
  */
 require('dotenv').config();
 const express    = require('express');
 const cors       = require('cors');
-const monk       = require('monk');
-const { ObjectId } = require('monk');
+const { MongoClient, ObjectId } = require('mongodb');
 const session    = require('express-session');
+const MongoStore = require('connect-mongo');
 const nodemailer = require('nodemailer');
 const multer     = require('multer');
 const path       = require('path');
@@ -95,14 +92,27 @@ app.use('/uploads', (req, res, next) => {
 }, express.static(uploadsDir));
 
 // =============================================
-// Session
+// Session — backed by MongoDB via connect-mongo
+// (replaces the leaky in-memory MemoryStore)
 // =============================================
+const mongoUri = process.env.MONGO_URI;
+if (!mongoUri) {
+  console.error('FATAL: MONGO_URI environment variable is not set.');
+  process.exit(1);
+}
+
 app.use(session({
   secret:            process.env.SESSION_SECRET || '4k-production-secret-key-2024',
   resave:            false,
   saveUninitialized: false,
+  store: MongoStore.create({
+    mongoUrl:         mongoUri,
+    collectionName:   'sessions',
+    ttl:              30 * 24 * 60 * 60, // 30 days in seconds
+    autoRemove:       'native'
+  }),
   cookie: {
-    secure:   false,
+    secure:   process.env.NODE_ENV === 'production',
     httpOnly: true,
     maxAge:   30 * 24 * 60 * 60 * 1000,
     sameSite: 'lax'
@@ -131,49 +141,40 @@ app.use((req, _res, next) => {
 });
 
 // =============================================
-// Database — MongoDB via Monk
+// Database — native MongoDB driver
 // =============================================
+let mongoClient;
 let db;
-
-// Collection handles (populated after connection)
-let announcements, portfolio, serviceRequests, contactMessages, events;
+let colls = {}; // { announcements, portfolio, serviceRequests, contactMessages, events }
 
 async function initDatabase() {
-  const mongoUri = process.env.MONGO_URI;
-  if (!mongoUri) {
-    throw new Error('MONGO_URI environment variable is not set. Please configure it in Render\'s environment settings.');
-  }
-  try {
-    db = monk(mongoUri);
+  mongoClient = new MongoClient(mongoUri, {
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS:         10000,
+  });
+  await mongoClient.connect();
+  db = mongoClient.db(); // uses the DB from the connection string
 
-    // monk returns a promise-like; wait for connection
-    await db.then(() => {});  // monk internally resolves when ready
+  colls.announcements   = db.collection('announcements');
+  colls.portfolio       = db.collection('portfolio');
+  colls.serviceRequests = db.collection('service_requests');
+  colls.contactMessages = db.collection('contact_messages');
+  colls.events          = db.collection('events');
 
-    // Get collection handles
-    announcements   = db.get('announcements');
-    portfolio       = db.get('portfolio');
-    serviceRequests = db.get('service_requests');
-    contactMessages = db.get('contact_messages');
-    events          = db.get('events');
+  // Indexes
+  await colls.events.createIndex({ slug: 1 }, { unique: true, sparse: true });
+  await colls.serviceRequests.createIndex({ status: 1 });
+  await colls.serviceRequests.createIndex({ createdAt: -1 });
+  await colls.contactMessages.createIndex({ is_read: 1 });
+  await colls.contactMessages.createIndex({ createdAt: -1 });
+  await colls.announcements.createIndex({ status: 1, createdAt: -1 });
+  await colls.portfolio.createIndex({ category: 1 });
 
-    // Create indexes to mirror MySQL unique/query patterns
-    await events.createIndex({ slug: 1 }, { unique: true, sparse: true });
-    await serviceRequests.createIndex({ status: 1 });
-    await serviceRequests.createIndex({ createdAt: -1 });
-    await contactMessages.createIndex({ isRead: 1 });
-    await contactMessages.createIndex({ createdAt: -1 });
-    await announcements.createIndex({ status: 1, createdAt: -1 });
-    await portfolio.createIndex({ category: 1 });
-
-    console.log('MongoDB connected via Monk');
-  } catch (err) {
-    console.error('MongoDB failed:', err.message);
-    process.exit(1);
-  }
+  console.log('MongoDB connected (native driver)');
 }
 
 // =============================================
-// Nodemailer  (unchanged)
+// Nodemailer
 // =============================================
 let transporter;
 function initMailer() {
@@ -293,18 +294,17 @@ function requireAdmin(req, res, next) {
   return res.status(401).json({ success: false, message: 'Unauthorized. Please log in.' });
 }
 
-/**
- * normalizeDoc — converts a MongoDB document to the shape the frontend expects.
- *
- * MySQL used numeric auto-increment `id`; MongoDB uses `_id` (ObjectId).
- * The frontend references `item.id` in many places.
- * We expose BOTH `id` (string) and keep `_id` so existing code never breaks.
- * All snake_case field names that existed in MySQL are preserved as-is.
- */
+function isValidObjectId(str) {
+  return /^[a-f\d]{24}$/i.test(str);
+}
+
+function toOid(id) {
+  return new ObjectId(id);
+}
+
 function normalizeDoc(doc) {
   if (!doc) return doc;
   const out = { ...doc };
-  // Expose id as string alias of _id
   out.id = doc._id.toString();
   return out;
 }
@@ -313,25 +313,30 @@ function normalizeDocs(docs) {
   return docs.map(normalizeDoc);
 }
 
+async function findById(collection, id) {
+  if (!isValidObjectId(id)) return null;
+  return collection.findOne({ _id: toOid(id) });
+}
+
 // =============================================
 // Health
 // =============================================
 app.get('/health', (_req, res) => res.json({
   success: true, message: '4K Production API running',
   dbReady: !!db,
-  timestamp: new Date().toISOString(), version: '2.1.0'
+  timestamp: new Date().toISOString(), version: '2.2.0'
 }));
 
 // Guard: return 503 for any /api/* route if DB is not yet connected
 app.use('/api', (req, res, next) => {
-  if (!db || !announcements) {
+  if (!db) {
     return res.status(503).json({ success: false, message: 'Database is initializing, please retry in a moment.' });
   }
   next();
 });
 
 // =============================================
-// Desktop Auto-Auth (one-shot session endpoint)
+// Desktop Auto-Auth
 // =============================================
 app.post('/api/admin/desktop-auth', asyncHandler(async (req, res) => {
   const desktopToken  = process.env.DESKTOP_AUTH_TOKEN;
@@ -365,7 +370,7 @@ app.post('/api/admin/desktop-auth', asyncHandler(async (req, res) => {
 }));
 
 // =============================================
-// Admin Auth (browser login)  — no DB needed; credentials are env-based
+// Admin Auth
 // =============================================
 app.post('/api/admin/login',
   [body('username').notEmpty().trim(), body('password').notEmpty()],
@@ -399,68 +404,46 @@ app.get('/api/admin/me', (req, res) => {
 // Admin Dashboard Stats
 // =============================================
 app.get('/api/admin/dashboard', requireAdmin, asyncHandler(async (_req, res) => {
-  // COUNT queries → Monk .count()
   const [
-    total_requests,
-    pending_requests,
-    total_messages,
-    unread_messages,
-    total_announcements,
-    total_portfolio,
-    total_events
+    total_requests, pending_requests,
+    total_messages, unread_messages,
+    total_announcements, total_portfolio, total_events
   ] = await Promise.all([
-    serviceRequests.count({}),
-    serviceRequests.count({ status: 'pending' }),
-    contactMessages.count({}),
-    contactMessages.count({ is_read: false }),
-    announcements.count({}),
-    portfolio.count({}),
-    events.count({})
+    colls.serviceRequests.countDocuments({}),
+    colls.serviceRequests.countDocuments({ status: 'pending' }),
+    colls.contactMessages.countDocuments({}),
+    colls.contactMessages.countDocuments({ is_read: false }),
+    colls.announcements.countDocuments({}),
+    colls.portfolio.countDocuments({}),
+    colls.events.countDocuments({})
   ]);
 
-  // Recent rows — mirror the exact SELECT shape the frontend expects
   const [rawRequests, rawMessages, rawEvents] = await Promise.all([
-    serviceRequests.find({}, { sort: { createdAt: -1 }, limit: 5 }),
-    contactMessages.find({}, { sort: { createdAt: -1 }, limit: 5 }),
-    events.find({}, { sort: { createdAt: -1 }, limit: 5 })
+    colls.serviceRequests.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+    colls.contactMessages.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+    colls.events.find({}).sort({ createdAt: -1 }).limit(5).toArray()
   ]);
 
-  // Shape recent requests to match original response shape
   const recentRequests = normalizeDocs(rawRequests).map(r => ({
-    id:         r.id,
-    name:       r.name,
-    email:      r.email,
-    detail:     r.service_type,
-    status:     r.status,
-    created_at: r.created_at,
-    type:       'request'
+    id: r.id, name: r.name, email: r.email,
+    detail: r.service_type, status: r.status,
+    created_at: r.created_at, type: 'request'
   }));
 
-  // Shape recent messages
   const recentMessages = normalizeDocs(rawMessages).map(m => ({
-    id:         m.id,
-    name:       m.name,
-    email:      m.email,
-    detail:     (m.message || '').substring(0, 60),
-    status:     m.is_read ? 'read' : 'unread',
-    created_at: m.created_at,
-    type:       'message'
+    id: m.id, name: m.name, email: m.email,
+    detail: (m.message || '').substring(0, 60),
+    status: m.is_read ? 'read' : 'unread',
+    created_at: m.created_at, type: 'message'
   }));
 
-  // Shape recent events — same normalisation as original
   const normalisedEvents = normalizeDocs(rawEvents).map(e => {
     const photos = Array.isArray(e.photos) ? e.photos : [];
-    const photoCount = photos.length;
     return {
-      id:         e.id,
-      name:       e.event_name,
-      email:      e.client_name || '',
-      detail:     `${photoCount} photo${photoCount !== 1 ? 's' : ''} uploaded`,
-      status:     'published',
-      created_at: e.created_at,
-      type:       'event',
-      slug:       e.slug,
-      thumbnail:  photos[0] || null
+      id: e.id, name: e.event_name, email: e.client_name || '',
+      detail: `${photos.length} photo${photos.length !== 1 ? 's' : ''} uploaded`,
+      status: 'published', created_at: e.created_at,
+      type: 'event', slug: e.slug, thumbnail: photos[0] || null
     };
   });
 
@@ -471,22 +454,14 @@ app.get('/api/admin/dashboard', requireAdmin, asyncHandler(async (_req, res) => 
   res.json({
     success: true,
     data: {
-      stats: {
-        total_requests,
-        pending_requests,
-        total_messages,
-        unread_messages,
-        total_announcements,
-        total_portfolio,
-        total_events
-      },
+      stats: { total_requests, pending_requests, total_messages, unread_messages, total_announcements, total_portfolio, total_events },
       recentActivity
     }
   });
 }));
 
 // =============================================
-// File Upload Endpoints  (unchanged — Multer handles these)
+// File Upload Endpoints
 // =============================================
 app.post('/api/upload', upload.single('file'), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
@@ -507,38 +482,29 @@ app.post('/api/upload/multiple', upload.array('files', 20), asyncHandler(async (
 // Announcements (Public)
 // =============================================
 app.get('/api/announcements', asyncHandler(async (_req, res) => {
-  // MySQL: WHERE (status IS NULL OR status='' OR status='published')
-  const rows = await announcements.find({
-    $or: [
-      { status: { $exists: false } },
-      { status: '' },
-      { status: 'published' }
-    ]
-  }, { sort: { createdAt: -1 } });
+  const rows = await colls.announcements.find({
+    $or: [{ status: { $exists: false } }, { status: '' }, { status: 'published' }]
+  }).sort({ createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
 app.get('/api/announcements/featured', asyncHandler(async (_req, res) => {
-  const rows = await announcements.find({
+  const rows = await colls.announcements.find({
     is_featured: true,
-    $or: [
-      { status: { $exists: false } },
-      { status: '' },
-      { status: 'published' }
-    ]
-  }, { sort: { createdAt: -1 }, limit: 3 });
+    $or: [{ status: { $exists: false } }, { status: '' }, { status: 'published' }]
+  }).sort({ createdAt: -1 }).limit(3).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
 app.get('/api/announcements/:id', asyncHandler(async (req, res) => {
-  const doc = await findById(announcements, req.params.id);
+  const doc = await findById(colls.announcements, req.params.id);
   if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
   res.json({ success: true, data: normalizeDoc(doc) });
 }));
 
 // Announcements (Admin)
 app.get('/api/admin/announcements', requireAdmin, asyncHandler(async (_req, res) => {
-  const rows = await announcements.find({}, { sort: { createdAt: -1 } });
+  const rows = await colls.announcements.find({}).sort({ createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
@@ -556,23 +522,19 @@ app.post('/api/announcements', requireAdmin,
     } = req.body;
 
     const now = new Date().toISOString();
-    const doc = await announcements.insert({
-      title,
-      content,
-      category,
-      image_url,
-      is_featured: !!is_featured,
-      status,
+    const result = await colls.announcements.insertOne({
+      title, content, category, image_url,
+      is_featured: !!is_featured, status,
       publish_date: publish_date || null,
-      created_at:  now,
-      updated_at:  now
+      created_at: now, updated_at: now
     });
+    const doc = await colls.announcements.findOne({ _id: result.insertedId });
     res.status(201).json({ success: true, message: 'Announcement created', data: normalizeDoc(doc) });
   })
 );
 
 app.put('/api/announcements/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(announcements, req.params.id);
+  const existing = await findById(colls.announcements, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
 
   const fields = {};
@@ -582,29 +544,29 @@ app.put('/api/announcements/:id', requireAdmin, asyncHandler(async (req, res) =>
   if (!Object.keys(fields).length) return res.status(400).json({ success: false, message: 'No fields to update' });
 
   fields.updated_at = new Date().toISOString();
-  await announcements.update({ _id: existing._id }, { $set: fields });
-  const updated = await findById(announcements, req.params.id);
+  await colls.announcements.updateOne({ _id: existing._id }, { $set: fields });
+  const updated = await colls.announcements.findOne({ _id: existing._id });
   res.json({ success: true, message: 'Updated', data: normalizeDoc(updated) });
 }));
 
 app.put('/api/announcements/:id/publish', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(announcements, req.params.id);
+  const existing = await findById(colls.announcements, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await announcements.update({ _id: existing._id }, { $set: { status: 'published', updated_at: new Date().toISOString() } });
+  await colls.announcements.updateOne({ _id: existing._id }, { $set: { status: 'published', updated_at: new Date().toISOString() } });
   res.json({ success: true, message: 'Published' });
 }));
 
 app.put('/api/announcements/:id/unpublish', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(announcements, req.params.id);
+  const existing = await findById(colls.announcements, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await announcements.update({ _id: existing._id }, { $set: { status: 'draft', updated_at: new Date().toISOString() } });
+  await colls.announcements.updateOne({ _id: existing._id }, { $set: { status: 'draft', updated_at: new Date().toISOString() } });
   res.json({ success: true, message: 'Unpublished' });
 }));
 
 app.delete('/api/announcements/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(announcements, req.params.id);
+  const existing = await findById(colls.announcements, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await announcements.remove({ _id: existing._id });
+  await colls.announcements.deleteOne({ _id: existing._id });
   res.json({ success: true, message: 'Deleted' });
 }));
 
@@ -614,19 +576,18 @@ app.delete('/api/announcements/:id', requireAdmin, asyncHandler(async (req, res)
 app.get('/api/portfolio', asyncHandler(async (req, res) => {
   const { category } = req.query;
   const query = (category && category !== 'All') ? { category } : {};
-  const rows  = await portfolio.find(query, { sort: { is_featured: -1, createdAt: -1 } });
+  const rows  = await colls.portfolio.find(query).sort({ is_featured: -1, createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
 app.get('/api/portfolio/categories', asyncHandler(async (_req, res) => {
-  // Distinct category values
-  const rows = await portfolio.distinct('category');
+  const rows   = await colls.portfolio.distinct('category');
   const sorted = rows.slice().sort();
   res.json({ success: true, data: ['All', ...sorted] });
 }));
 
 app.get('/api/portfolio/:id', asyncHandler(async (req, res) => {
-  const doc = await findById(portfolio, req.params.id);
+  const doc = await findById(colls.portfolio, req.params.id);
   if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
   res.json({ success: true, data: normalizeDoc(doc) });
 }));
@@ -636,33 +597,23 @@ app.post('/api/portfolio', requireAdmin,
   asyncHandler(async (req, res) => {
     if (handleValidation(req, res)) return;
     const {
-      title,
-      description = null,
-      category,
-      media_type  = 'image',
-      media_url,
-      thumbnail   = null,
-      client      = null,
-      is_featured = false
+      title, description = null, category,
+      media_type = 'image', media_url,
+      thumbnail = null, client = null, is_featured = false
     } = req.body;
 
-    const doc = await portfolio.insert({
-      title,
-      description,
-      category,
-      media_type,
-      media_url,
-      thumbnail,
-      client,
-      is_featured: !!is_featured,
+    const result = await colls.portfolio.insertOne({
+      title, description, category, media_type, media_url,
+      thumbnail, client, is_featured: !!is_featured,
       created_at: new Date().toISOString()
     });
+    const doc = await colls.portfolio.findOne({ _id: result.insertedId });
     res.status(201).json({ success: true, message: 'Portfolio item created', data: normalizeDoc(doc) });
   })
 );
 
 app.put('/api/portfolio/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(portfolio, req.params.id);
+  const existing = await findById(colls.portfolio, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
 
   const fields = {};
@@ -670,15 +621,15 @@ app.put('/api/portfolio/:id', requireAdmin, asyncHandler(async (req, res) => {
     if (req.body[f] !== undefined) fields[f] = req.body[f];
   });
 
-  await portfolio.update({ _id: existing._id }, { $set: fields });
-  const updated = await findById(portfolio, req.params.id);
+  await colls.portfolio.updateOne({ _id: existing._id }, { $set: fields });
+  const updated = await colls.portfolio.findOne({ _id: existing._id });
   res.json({ success: true, message: 'Updated', data: normalizeDoc(updated) });
 }));
 
 app.delete('/api/portfolio/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(portfolio, req.params.id);
+  const existing = await findById(colls.portfolio, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await portfolio.remove({ _id: existing._id });
+  await colls.portfolio.deleteOne({ _id: existing._id });
   res.json({ success: true, message: 'Deleted' });
 }));
 
@@ -688,12 +639,12 @@ app.delete('/api/portfolio/:id', requireAdmin, asyncHandler(async (req, res) => 
 app.get('/api/requests', requireAdmin, asyncHandler(async (req, res) => {
   const { status } = req.query;
   const query = status ? { status } : {};
-  const rows  = await serviceRequests.find(query, { sort: { createdAt: -1 } });
+  const rows  = await colls.serviceRequests.find(query).sort({ createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
 app.get('/api/requests/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const doc = await findById(serviceRequests, req.params.id);
+  const doc = await findById(colls.serviceRequests, req.params.id);
   if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
   res.json({ success: true, data: normalizeDoc(doc) });
 }));
@@ -704,18 +655,13 @@ app.post('/api/requests',
     if (handleValidation(req, res)) return;
     const { name, email, phone = null, service_type, event_date = null, budget = null, message = null } = req.body;
 
-    const doc = await serviceRequests.insert({
-      name,
-      email,
-      phone,
-      service_type,
-      event_date:  event_date || null,
-      budget,
-      message,
-      status:      'pending',
-      created_at:  new Date().toISOString()
+    const result = await colls.serviceRequests.insertOne({
+      name, email, phone, service_type,
+      event_date: event_date || null, budget, message,
+      status: 'pending', created_at: new Date().toISOString()
     });
     sendEmails({ type: 'service', name, email, details: { 'Name': name, 'Email': email, 'Phone': phone || '—', 'Service Type': service_type, 'Event Date': event_date || '—', 'Budget': budget || '—', 'Message': message || '—' } });
+    const doc = await colls.serviceRequests.findOne({ _id: result.insertedId });
     res.status(201).json({ success: true, message: 'Service request received!', data: normalizeDoc(doc) });
   })
 );
@@ -724,17 +670,17 @@ app.put('/api/requests/:id/status', requireAdmin,
   [body('status').isIn(['pending', 'reviewed', 'approved', 'confirmed', 'dismissed', 'completed'])],
   asyncHandler(async (req, res) => {
     if (handleValidation(req, res)) return;
-    const existing = await findById(serviceRequests, req.params.id);
+    const existing = await findById(colls.serviceRequests, req.params.id);
     if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-    await serviceRequests.update({ _id: existing._id }, { $set: { status: req.body.status } });
+    await colls.serviceRequests.updateOne({ _id: existing._id }, { $set: { status: req.body.status } });
     res.json({ success: true, message: 'Status updated' });
   })
 );
 
 app.delete('/api/requests/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(serviceRequests, req.params.id);
+  const existing = await findById(colls.serviceRequests, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await serviceRequests.remove({ _id: existing._id });
+  await colls.serviceRequests.deleteOne({ _id: existing._id });
   res.json({ success: true, message: 'Deleted' });
 }));
 
@@ -742,22 +688,19 @@ app.delete('/api/requests/:id', requireAdmin, asyncHandler(async (req, res) => {
 // Events (Public & Admin)
 // =============================================
 app.get('/api/events', asyncHandler(async (_req, res) => {
-  const rows = await events.find({}, { sort: { event_date: -1, createdAt: -1 } });
-  // photos is stored natively as an array in MongoDB — no JSON.parse needed
+  const rows = await colls.events.find({}).sort({ event_date: -1, createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows).map(r => ({ ...r, photos: Array.isArray(r.photos) ? r.photos : [] })) });
 }));
 
 app.get('/api/events/:idOrSlug', asyncHandler(async (req, res) => {
   const { idOrSlug } = req.params;
-  let event;
+  let event = null;
 
-  // Try as ObjectId first, fall back to slug
   if (isValidObjectId(idOrSlug)) {
-    event = await events.findOne({ _id: monk.id(idOrSlug) });
+    event = await colls.events.findOne({ _id: toOid(idOrSlug) });
   }
   if (!event) {
-    // Numeric legacy ID or slug — just treat as slug
-    event = await events.findOne({ slug: idOrSlug });
+    event = await colls.events.findOne({ slug: idOrSlug });
   }
   if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
 
@@ -771,26 +714,23 @@ app.post('/api/events', requireAdmin,
     if (handleValidation(req, res)) return;
     const { event_name, client_name = null, event_date = null, video_url = null, photos = [] } = req.body;
 
-    // Generate unique slug
     let slug = slugify(event_name);
-    const dup = await events.findOne({ slug });
+    const dup = await colls.events.findOne({ slug });
     if (dup) slug = `${slug}-${Date.now().toString().slice(-4)}`;
 
-    const doc = await events.insert({
-      event_name,
-      client_name,
-      event_date:  event_date || null,
+    const result = await colls.events.insertOne({
+      event_name, client_name,
+      event_date: event_date || null,
       video_url,
-      photos:      Array.isArray(photos) ? photos : [],
-      slug,
-      created_at:  new Date().toISOString()
+      photos: Array.isArray(photos) ? photos : [],
+      slug, created_at: new Date().toISOString()
     });
-    res.status(201).json({ success: true, message: 'Event created', id: doc._id.toString(), slug });
+    res.status(201).json({ success: true, message: 'Event created', id: result.insertedId.toString(), slug });
   })
 );
 
 app.put('/api/events/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(events, req.params.id);
+  const existing = await findById(colls.events, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
 
   const fields = {};
@@ -798,10 +738,9 @@ app.put('/api/events/:id', requireAdmin, asyncHandler(async (req, res) => {
     if (req.body[f] !== undefined) fields[f] = req.body[f];
   });
 
-  // Regenerate slug if event_name changed
   if (req.body.event_name && req.body.event_name !== existing.event_name) {
     let slug = slugify(req.body.event_name);
-    const dup = await events.findOne({ slug, _id: { $ne: existing._id } });
+    const dup = await colls.events.findOne({ slug, _id: { $ne: existing._id } });
     if (dup) slug = `${slug}-${Date.now().toString().slice(-4)}`;
     fields.slug = slug;
   }
@@ -810,23 +749,22 @@ app.put('/api/events/:id', requireAdmin, asyncHandler(async (req, res) => {
 
   if (Object.keys(fields).length === 0) return res.json({ success: true, message: 'No changes' });
 
-  await events.update({ _id: existing._id }, { $set: fields });
+  await colls.events.updateOne({ _id: existing._id }, { $set: fields });
   res.json({ success: true, message: 'Event updated' });
 }));
 
 app.delete('/api/events/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(events, req.params.id);
+  const existing = await findById(colls.events, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await events.remove({ _id: existing._id });
+  await colls.events.deleteOne({ _id: existing._id });
   res.json({ success: true, message: 'Event deleted' });
 }));
 
-// Download all images in an event as a zip
 app.get('/api/events/:idOrSlug/download-all', asyncHandler(async (req, res) => {
   const { idOrSlug } = req.params;
-  let event;
-  if (isValidObjectId(idOrSlug)) event = await events.findOne({ _id: monk.id(idOrSlug) });
-  if (!event) event = await events.findOne({ slug: idOrSlug });
+  let event = null;
+  if (isValidObjectId(idOrSlug)) event = await colls.events.findOne({ _id: toOid(idOrSlug) });
+  if (!event) event = await colls.events.findOne({ slug: idOrSlug });
   if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
 
   const photos = Array.isArray(event.photos) ? event.photos : [];
@@ -864,16 +802,12 @@ app.post('/api/contact',
   asyncHandler(async (req, res) => {
     if (handleValidation(req, res)) return;
     const { name, email, phone = null, message } = req.body;
-    const doc = await contactMessages.insert({
-      name,
-      email,
-      phone,
-      message,
-      is_read:    false,
-      created_at: new Date().toISOString()
+    const result = await colls.contactMessages.insertOne({
+      name, email, phone, message,
+      is_read: false, created_at: new Date().toISOString()
     });
     sendEmails({ type: 'contact', name, email, details: { 'Name': name, 'Email': email, 'Phone': phone || '—', 'Message': message } });
-    res.status(201).json({ success: true, message: 'Thank you! We will get back to you within 24 hours.', id: doc._id.toString() });
+    res.status(201).json({ success: true, message: 'Thank you! We will get back to you within 24 hours.', id: result.insertedId.toString() });
   })
 );
 
@@ -882,28 +816,28 @@ app.get('/api/contact', requireAdmin, asyncHandler(async (req, res) => {
   let query = {};
   if (status === 'unread') query = { is_read: false };
   else if (status === 'read') query = { is_read: true };
-  const rows = await contactMessages.find(query, { sort: { createdAt: -1 } });
+  const rows = await colls.contactMessages.find(query).sort({ createdAt: -1 }).toArray();
   res.json({ success: true, data: normalizeDocs(rows) });
 }));
 
 app.get('/api/contact/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const doc = await findById(contactMessages, req.params.id);
+  const doc = await findById(colls.contactMessages, req.params.id);
   if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
-  await contactMessages.update({ _id: doc._id }, { $set: { is_read: true } });
+  await colls.contactMessages.updateOne({ _id: doc._id }, { $set: { is_read: true } });
   res.json({ success: true, data: normalizeDoc({ ...doc, is_read: true }) });
 }));
 
 app.put('/api/contact/:id/read', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(contactMessages, req.params.id);
+  const existing = await findById(colls.contactMessages, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await contactMessages.update({ _id: existing._id }, { $set: { is_read: true } });
+  await colls.contactMessages.updateOne({ _id: existing._id }, { $set: { is_read: true } });
   res.json({ success: true, message: 'Marked as read' });
 }));
 
 app.delete('/api/contact/:id', requireAdmin, asyncHandler(async (req, res) => {
-  const existing = await findById(contactMessages, req.params.id);
+  const existing = await findById(colls.contactMessages, req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: 'Not found' });
-  await contactMessages.remove({ _id: existing._id });
+  await colls.contactMessages.deleteOne({ _id: existing._id });
   res.json({ success: true, message: 'Deleted' });
 }));
 
@@ -912,27 +846,13 @@ app.delete('/api/contact/:id', requireAdmin, asyncHandler(async (req, res) => {
 // =============================================
 app.get('/api/stats', asyncHandler(async (_req, res) => {
   const [total_requests, total_portfolio, total_announcements, total_messages] = await Promise.all([
-    serviceRequests.count({}),
-    portfolio.count({}),
-    announcements.count({}),
-    contactMessages.count({})
+    colls.serviceRequests.countDocuments({}),
+    colls.portfolio.countDocuments({}),
+    colls.announcements.countDocuments({}),
+    colls.contactMessages.countDocuments({})
   ]);
   res.json({ success: true, data: { service_requests: total_requests, portfolio_items: total_portfolio, announcements: total_announcements, contact_messages: total_messages } });
 }));
-
-// =============================================
-// Utility: safe findById — handles both ObjectId and non-ObjectId strings
-// =============================================
-async function findById(collection, id) {
-  if (isValidObjectId(id)) {
-    return collection.findOne({ _id: monk.id(id) });
-  }
-  return null;
-}
-
-function isValidObjectId(str) {
-  return /^[a-f\d]{24}$/i.test(str);
-}
 
 // =============================================
 // 404
@@ -945,7 +865,7 @@ app.use((_req, res) => res.status(404).json({ success: false, message: 'Route no
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err);
-  if (err.code === 11000)        return res.status(409).json({ success: false, message: 'Duplicate entry' });
+  if (err.code === 11000)          return res.status(409).json({ success: false, message: 'Duplicate entry' });
   if (err.code === 'ECONNREFUSED') return res.status(503).json({ success: false, message: 'Database unavailable' });
   if (err.message && err.message.includes('Invalid file type')) {
     return res.status(400).json({ success: false, message: err.message });
@@ -954,16 +874,15 @@ app.use((err, _req, res, _next) => {
 });
 
 // =============================================
-// Boot — server starts first, then DB connects
-// This ensures Render always detects an open port
+// Boot — HTTP server starts first, DB connects after
 // =============================================
 async function start() {
   initMailer();
 
-  // Start HTTP server FIRST so Render can detect the port
+  // Start HTTP server FIRST so Render always detects the port
   await new Promise((resolve) => {
     app.listen(PORT, () => {
-      console.log(`\n4K Production API v2.1 (MongoDB) on port ${PORT}`);
+      console.log(`\n4K Production API v2.2 (MongoDB native) on port ${PORT}`);
       console.log('Desktop auto-auth: ' + (process.env.DESKTOP_AUTH_TOKEN ? 'ENABLED ✓' : 'NOT CONFIGURED'));
       console.log('File uploads: ENABLED ✓');
       console.log(`Uploads directory: ${uploadsDir}`);
@@ -971,20 +890,19 @@ async function start() {
     });
   });
 
-  // Then connect to MongoDB with retry logic
+  // Connect to MongoDB with retry
   let retries = 5;
   while (retries > 0) {
     try {
       await initDatabase();
-      break; // success
+      break;
     } catch (err) {
       retries--;
       console.error(`MongoDB connection failed (${retries} retries left):`, err.message);
       if (retries === 0) {
-        console.error('Could not connect to MongoDB after multiple attempts. Check MONGO_URI in environment variables.');
+        console.error('Could not connect to MongoDB. Check MONGO_URI in environment variables.');
         process.exit(1);
       }
-      // Wait 5 seconds before retrying
       await new Promise(r => setTimeout(r, 5000));
     }
   }
