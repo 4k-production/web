@@ -1,0 +1,177 @@
+/* ==========================================================
+   Admin CMS — Modal Styles (Global)
+   These are global because they're used inside <Teleport to="body">
+   which renders outside .admin-layout.
+   Uses global CSS vars (--bg-secondary, --border-color, etc.)
+   set on :root via data-theme on <html>.
+   ========================================================== */
+
+.adm-modal-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+
+[data-theme="light"] .adm-modal-overlay {
+  background: rgba(80,80,130,0.32);
+}
+
+.adm-modal-panel {
+  width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 24px;
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+[data-theme="light"] .adm-modal-panel {
+  background: rgba(250,251,255,0.98);
+  box-shadow: 0 32px 80px rgba(100,100,150,0.2);
+}
+
+.adm-modal-wide { max-width: 720px; }
+
+.adm-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 28px 18px;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky; top: 0;
+  background: var(--bg-secondary);
+  z-index: 1;
+  border-radius: 24px 24px 0 0;
+}
+
+[data-theme="light"] .adm-modal-header {
+  background: rgba(250,251,255,0.98);
+}
+
+.adm-modal-title {
+  font-family: 'Syne', sans-serif; font-size: 1.05rem;
+  font-weight: 700; color: var(--text-primary);
+}
+
+.adm-modal-close {
+  width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); transition: all 0.2s;
+}
+.adm-modal-close svg { width: 16px; height: 16px; }
+.adm-modal-close:hover {
+  background: rgba(239,68,68,0.12); color: #f87171;
+  border-color: rgba(239,68,68,0.2);
+}
+
+.adm-modal-body { padding: 24px 28px; }
+
+.adm-modal-footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 14px 28px 22px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Form elements inside modals */
+.adm-form-row   { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.adm-form-group { margin-bottom: 16px; }
+
+.adm-form-label {
+  display: block; margin-bottom: 7px;
+  font-size: 0.8rem; font-weight: 600;
+  color: var(--text-secondary); letter-spacing: 0.03em;
+}
+.adm-req { color: #f87171; }
+
+.adm-form-input,
+.adm-form-textarea,
+.adm-form-select {
+  width: 100%; padding: 11px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-family: var(--font-body);
+  transition: all 0.2s;
+}
+.adm-form-input::placeholder,
+.adm-form-textarea::placeholder { color: var(--text-muted); }
+
+.adm-form-input:focus,
+.adm-form-textarea:focus,
+.adm-form-select:focus {
+  border-color: rgba(139,92,246,0.5);
+  background: var(--bg-card-hover);
+  box-shadow: 0 0 0 3px rgba(139,92,246,0.1);
+  outline: none;
+}
+.adm-form-textarea { resize: vertical; min-height: 110px; }
+.adm-form-select option { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Checkbox */
+.adm-check-group  { display: flex; align-items: center; }
+.adm-check-label  {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  font-size: 0.875rem; color: var(--text-secondary); user-select: none;
+}
+.adm-check-input  { display: none; }
+.adm-check-custom {
+  width: 18px; height: 18px; border-radius: 5px; flex-shrink: 0;
+  background: var(--bg-input); border: 1px solid var(--border-color);
+  display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+}
+.adm-check-input:checked + .adm-check-custom {
+  background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+  border-color: transparent;
+}
+.adm-check-input:checked + .adm-check-custom::after {
+  content: '✓'; color: white; font-size: 11px; font-weight: 700;
+}
+
+/* Cancel / action buttons */
+.adm-btn-cancel {
+  padding: 9px 20px; border-radius: 9999px; font-size: 0.875rem; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+}
+.adm-btn-cancel:hover { color: var(--text-primary); background: var(--bg-card-hover); }
+
+/* Alert inside forms */
+.adm-alert-error {
+  padding: 12px 16px; border-radius: 10px; font-size: 0.875rem; margin-top: 12px;
+  background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); color: #f87171;
+}
+
+/* View modal content */
+.adm-view-body    { display: flex; flex-direction: column; gap: 16px; }
+.adm-view-image   { width: 100%; height: 220px; object-fit: cover; border-radius: 12px; }
+.adm-view-meta    { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.adm-view-title   { font-family: 'Syne',sans-serif; font-size: 1.2rem; font-weight: 700; color: var(--text-primary); }
+.adm-view-content { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.75; }
+.adm-view-dates   { display: flex; gap: 20px; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; }
+
+.adm-modal-footer-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.adm-reply-btn { text-decoration: none; }
+
+/* Btn spinner */
+.adm-btn-spinner {
+  width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white; border-radius: 50%;
+  animation: adm-ms 0.6s linear infinite; flex-shrink: 0;
+}
+@keyframes adm-ms { to { transform: rotate(360deg); } }
+
+/* Modal transitions */
+.modal-enter-active, .modal-leave-active { transition: all 0.28s cubic-bezier(0.4,0,0.2,1); }
+.modal-enter-from, .modal-leave-to       { opacity: 0; }
+.modal-enter-from .adm-modal-panel,
+.modal-leave-to   .adm-modal-panel       { transform: scale(0.94) translateY(14px); }
+
+@media (max-width: 640px) {
+  .adm-form-row { grid-template-columns: 1fr; }
+}
