@@ -695,10 +695,10 @@ npm run dev
 ### Step 6 — Verify
 
 ```bash
-curl https://fourk-production.onrender.com/health
+curl https://4k-production.onrender.com/health
 # Expected: {"success":true,"message":"4K Production API running",...}
 
-curl https://fourk-production.onrender.com/api/announcements
+curl https://4k-production.onrender.com/api/announcements
 # Expected: {"success":true,"data":[...]}
 ```
 

@@ -61,6 +61,13 @@ const upload = multer({
 // =============================================
 // CORS
 // =============================================
+// Build allowed origins list from env (comma-separated for multiple)
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : [])
+]);
+
 app.use(cors({
   origin: function(origin, callback) {
     if (
@@ -68,7 +75,7 @@ app.use(cors({
       origin === 'null' ||
       origin.startsWith('http://localhost') ||
       origin.startsWith('http://127.0.0.1') ||
-      origin === (process.env.CORS_ORIGIN || 'http://localhost:5173')
+      allowedOrigins.has(origin)
     ) {
       return callback(null, true);
     }

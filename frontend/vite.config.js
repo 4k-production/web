@@ -2,13 +2,16 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 
+// Electron detection at build time
+// When building for Electron, pass VITE_ELECTRON=true
+const isElectron = process.env.VITE_ELECTRON === 'true'
+
 export default defineConfig({
   plugins: [vue()],
 
-  // ─── CRITICAL for Electron ───────────────────
-  // Changes /assets/... → ./assets/... (relative paths)
-  // Absolute paths break on file:// protocol (blank screen)
-  base: './',
+  // Use './' (relative) for Electron builds so assets load on file://
+  // Use '/' (absolute) for web/Vercel builds so assets load on /admin/login correctly
+  base: isElectron ? './' : '/',
 
   resolve: {
     alias: {
