@@ -15,7 +15,7 @@ function resolveApiBase() {
   }
   // Fallback for Electron without config — never use relative path on file://
   if (isElectron) {
-    return 'http://localhost:5000/api'
+    return 'https://4k-production.onrender.com/api'
   }
   return import.meta.env.VITE_API_URL || '/api'
 }

@@ -287,7 +287,7 @@ async function downloadAllImages() {
   
   try {
     const eventId = event.value.slug || event.value.id
-    const downloadUrl = `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/events/${eventId}/download-all`
+    const downloadUrl = `${import.meta.env.VITE_API_URL || 'https://4k-production.onrender.com'}/api/events/${eventId}/download-all`
     
     // Create a hidden link and click it to trigger download
     const link = document.createElement('a')

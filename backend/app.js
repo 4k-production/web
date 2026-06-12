@@ -140,7 +140,7 @@ let announcements, portfolio, serviceRequests, contactMessages, events;
 
 async function initDatabase() {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/fourk_production';
+    const mongoUri = process.env.MONGO_URI || 'mongodb+srv://4k-production:4k-production@4k-production.i0zgwjv.mongodb.net/?appName=4k-production';
     db = monk(mongoUri);
 
     // monk returns a promise-like; wait for connection

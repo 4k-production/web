@@ -57,7 +57,7 @@ const router   = useRouter()
 const retrying = ref(false)
 const lastError = ref('')
 
-const apiUrl = computed(() => window.electronConfig?.apiUrl || 'http://localhost:5000')
+const apiUrl = computed(() => window.electronConfig?.apiUrl || 'https://4k-production.onrender.com')
 
 async function retry() {
   retrying.value  = true
