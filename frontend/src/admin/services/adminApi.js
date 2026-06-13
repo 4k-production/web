@@ -40,11 +40,47 @@ const adminApi = axios.create({
   withCredentials: true
 })
 
+// ─── Token Storage ─────────────────────────────
+// JWT is stored in localStorage and sent via Authorization header.
+// This avoids relying on cross-site cookies (Vercel frontend ↔ Render
+// backend), which modern browsers increasingly block by default.
+const TOKEN_KEY = '4k_admin_token'
+
+export function getAdminToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setAdminToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    /* ignore storage errors (e.g. disabled in some webviews) */
+  }
+}
+
+// ─── Request Interceptor ──────────────────────
+adminApi.interceptors.request.use(config => {
+  const token = getAdminToken()
+  if (token) {
+    config.headers = config.headers || {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 // ─── Response Interceptor ─────────────────────
 adminApi.interceptors.response.use(
   response => response.data,
   error => {
     if (error.response?.status === 401) {
+      // Token is missing/invalid/expired — clear it so the login page
+      // doesn't keep trying to use it.
+      setAdminToken(null)
       // Use Vue Router for the redirect so there is no full-page reload.
       // Dynamic import avoids a circular dependency with the router module.
       import('@/router/index.js').then(({ default: router }) => {
@@ -62,9 +98,21 @@ adminApi.interceptors.response.use(
 // Auth
 // =============================================
 export const authApi = {
-  login:  (data) => adminApi.post('/admin/login', data),
-  logout: ()     => adminApi.post('/admin/logout'),
-  me:     ()     => adminApi.get('/admin/me')
+  login: async (data) => {
+    const res = await adminApi.post('/admin/login', data)
+    if (res?.token) setAdminToken(res.token)
+    return res
+  },
+  logout: async () => {
+    setAdminToken(null)
+    try {
+      return await adminApi.post('/admin/logout')
+    } catch {
+      // Even if the server call fails, the local token is already cleared.
+      return { success: true }
+    }
+  },
+  me: () => adminApi.get('/admin/me')
 }
 
 // =============================================
@@ -84,7 +132,10 @@ export const uploadApi = {
     // Pass upload_type as a query param so Multer's destination callback can
     // read it from req.query (req.body is not yet parsed when destination runs)
     return axios.post(`${apiBase}/upload?upload_type=${uploadType}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(getAdminToken() ? { Authorization: `Bearer ${getAdminToken()}` } : {})
+      },
       withCredentials: true,
       timeout: 60000
     }).then(res => res.data)
@@ -95,7 +146,10 @@ export const uploadApi = {
     // Pass upload_type as a query param so Multer's destination callback can
     // read it from req.query (req.body is not yet parsed when destination runs)
     return axios.post(`${apiBase}/upload/multiple?upload_type=${uploadType}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(getAdminToken() ? { Authorization: `Bearer ${getAdminToken()}` } : {})
+      },
       withCredentials: true,
       timeout: 60000
     }).then(res => res.data)

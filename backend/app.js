@@ -9,6 +9,7 @@ const cors       = require('cors');
 const { MongoClient, ObjectId } = require('mongodb');
 const session    = require('express-session');
 const MongoStore = require('connect-mongo');
+const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const multer     = require('multer');
 const path       = require('path');
@@ -108,6 +109,18 @@ if (!mongoUri) {
   process.exit(1);
 }
 
+// =============================================
+// JWT — used instead of/alongside cookies so admin
+// auth works even when the browser blocks third-party
+// (cross-site) cookies between the Vercel frontend and
+// Render backend.
+// =============================================
+const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || '4k-production-secret-key-2024';
+
+function signAdminToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+}
+
 app.use(session({
   secret:            process.env.SESSION_SECRET || '4k-production-secret-key-2024',
   resave:            false,
@@ -136,7 +149,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // =============================================
-// DESKTOP TOKEN MIDDLEWARE
+// DESKTOP TOKEN + JWT MIDDLEWARE
 // =============================================
 app.use((req, _res, next) => {
   const desktopToken  = process.env.DESKTOP_AUTH_TOKEN;
@@ -146,6 +159,22 @@ app.use((req, _res, next) => {
     req.session.adminUser = process.env.ADMIN_USERNAME || 'admin';
     req.session.isDesktop = true;
   }
+
+  // Stateless JWT auth (used by browser admin panel — works cross-site
+  // even when third-party session cookies are blocked).
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded && decoded.isAdmin) {
+        req.jwtAdmin = decoded;
+      }
+    } catch (err) {
+      // Invalid/expired token — ignore, request will be treated as unauthenticated
+    }
+  }
+
   next();
 });
 
@@ -300,6 +329,7 @@ const asyncHandler = fn => (req, res, next) => Promise.resolve(fn(req, res, next
 
 function requireAdmin(req, res, next) {
   if (req.session && req.session.isAdmin === true) return next();
+  if (req.jwtAdmin && req.jwtAdmin.isAdmin === true) return next();
   return res.status(401).json({ success: false, message: 'Unauthorized. Please log in.' });
 }
 
@@ -370,9 +400,11 @@ app.post('/api/admin/desktop-auth', asyncHandler(async (req, res) => {
       return res.status(500).json({ success: false, message: 'Session error' });
     }
     console.log('[Desktop Auth] Session created for desktop app');
+    const token = signAdminToken({ isAdmin: true, username: req.session.adminUser, isDesktop: true });
     return res.json({
       success: true,
       message: 'Desktop session created',
+      token,
       user: { username: req.session.adminUser, role: 'admin', isDesktop: true }
     });
   });
@@ -394,9 +426,10 @@ app.post('/api/admin/login',
       req.session.loginTime = new Date().toISOString();
       // Explicitly save session before responding so it is persisted to MongoDB
       // before the client's next request (e.g. GET /admin/me in the route guard).
+      const token = signAdminToken({ isAdmin: true, username });
       req.session.save((saveErr) => {
         if (saveErr) return res.status(500).json({ success: false, message: 'Session error, please try again.' });
-        return res.json({ success: true, message: 'Logged in successfully', user: { username, role: 'admin' } });
+        return res.json({ success: true, message: 'Logged in successfully', token, user: { username, role: 'admin' } });
       });
       return; // response handled in callback
     }
@@ -411,6 +444,9 @@ app.post('/api/admin/logout', (req, res) => {
 app.get('/api/admin/me', (req, res) => {
   if (req.session && req.session.isAdmin) {
     return res.json({ success: true, user: { username: req.session.adminUser, role: 'admin', isDesktop: !!req.session.isDesktop } });
+  }
+  if (req.jwtAdmin && req.jwtAdmin.isAdmin) {
+    return res.json({ success: true, user: { username: req.jwtAdmin.username, role: 'admin', isDesktop: !!req.jwtAdmin.isDesktop } });
   }
   return res.status(401).json({ success: false, message: 'Not authenticated' });
 });
