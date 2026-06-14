@@ -74,7 +74,7 @@ const cloudinaryStorage = new CloudinaryStorage({
 
 const upload = multer({
   storage: cloudinaryStorage,
-  limits:  { fileSize: 100 * 1024 * 1024 },
+  limits:  { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB — no practical limit for large video uploads
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       'image/jpeg', 'image/png', 'image/webp', 'image/gif',
@@ -1080,12 +1080,23 @@ app.use((err, _req, res, _next) => {
 async function start() {
   initMailer();
 
-  // Start HTTP server FIRST so Render always detects the port
+  // Start HTTP server FIRST so Render always detects the port.
+  // Use http.createServer so we can configure timeout values:
+  //   - headersTimeout  = 0 → no limit on how long to wait for request headers
+  //   - requestTimeout  = 0 → no limit on the overall request duration
+  //   - keepAliveTimeout = 0 → keep-alive connections never forcibly closed
+  // This prevents timeout errors when users upload many/large images or videos.
+  const server = http.createServer(app);
+  server.headersTimeout  = 0; // unlimited — prevents "headers timeout" on slow uploads
+  server.requestTimeout  = 0; // unlimited — prevents request cut-off mid-upload
+  server.keepAliveTimeout = 0; // unlimited — prevents idle keep-alive disconnects
+
   await new Promise((resolve) => {
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`\n4K Production API v2.3 (MongoDB + Cloudinary) on port ${PORT}`);
       console.log('Desktop auto-auth: ' + (process.env.DESKTOP_AUTH_TOKEN ? 'ENABLED ✓' : 'NOT CONFIGURED'));
       console.log('File uploads: Cloudinary ✓ (cloud: ' + process.env.CLOUDINARY_CLOUD_NAME + ')');
+      console.log('Upload timeouts: DISABLED ✓ (headersTimeout=0, requestTimeout=0, keepAliveTimeout=0)');
       resolve();
     });
   });

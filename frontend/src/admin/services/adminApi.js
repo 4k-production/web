@@ -137,7 +137,7 @@ export const uploadApi = {
         ...(getAdminToken() ? { Authorization: `Bearer ${getAdminToken()}` } : {})
       },
       withCredentials: true,
-      timeout: 60000
+      timeout: 0 // no timeout — large images/videos can take as long as needed
     }).then(res => res.data)
   },
   uploadMultiple: (files, uploadType = 'events') => {
@@ -151,7 +151,7 @@ export const uploadApi = {
         ...(getAdminToken() ? { Authorization: `Bearer ${getAdminToken()}` } : {})
       },
       withCredentials: true,
-      timeout: 60000
+      timeout: 0 // no timeout — multiple/large uploads can take as long as needed
     }).then(res => res.data)
   }
 }
