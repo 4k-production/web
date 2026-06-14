@@ -193,6 +193,8 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { eventsApi } from '@/services/api.js'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal, refresh } = useScrollReveal()
 const route = useRoute()
@@ -206,12 +208,6 @@ const toastMsg = ref('')
 const likedPhotos = ref(new Set())
 const downloadingZip = ref(false)
 
-const getMediaUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http')) return url;
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  return `${baseUrl}${url}`;
-};
 
 // Dynamic hero background using first event photo
 const heroBgStyle = computed(() => {
@@ -287,7 +283,8 @@ async function downloadAllImages() {
   
   try {
     const eventId = event.value.slug || event.value.id
-    const downloadUrl = `${import.meta.env.VITE_API_URL || 'https://fourk-production.onrender.com'}/api/events/${eventId}/download-all`
+    const apiBase = import.meta.env.VITE_API_URL || '/api'
+    const downloadUrl = `${apiBase}/events/${eventId}/download-all`
     
     // Create a hidden link and click it to trigger download
     const link = document.createElement('a')

@@ -1,7 +1,7 @@
 /**
- * 4K Production - Backend API Server v2.2
+ * 4K Production - Backend API Server v2.3
  * Express + MongoDB (native driver) + connect-mongo sessions
- * Fixes: deprecated Monk/MemoryStore warnings on Node 24
+ * Storage: Cloudinary (replaces local Multer disk storage)
  */
 require('dotenv').config();
 const express    = require('express');
@@ -13,42 +13,68 @@ const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const multer     = require('multer');
 const path       = require('path');
-const fs         = require('fs');
+const https      = require('https');
+const http       = require('http');
 const archiver   = require('archiver');
 const { body, validationResult } = require('express-validator');
+const { v2: cloudinary }         = require('cloudinary');
+const { CloudinaryStorage }      = require('multer-storage-cloudinary');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
 
 // =============================================
-// File Upload Configuration
+// Cloudinary Configuration
 // =============================================
-const uploadsDir       = path.join(__dirname, 'uploads');
-const portfolioDir     = path.join(uploadsDir, 'portfolio');
-const announcementsDir = path.join(uploadsDir, 'announcements');
-const eventsDir        = path.join(uploadsDir, 'events');
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.error('FATAL: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET must be set.');
+  process.exit(1);
+}
 
-[uploadsDir, portfolioDir, announcementsDir, eventsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure:     true,
 });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+// =============================================
+// Folder mapping by upload_type
+// =============================================
+const UPLOAD_FOLDERS = {
+  portfolio:     '4k-production/portfolio',
+  announcements: '4k-production/announcements',
+  events:        '4k-production/events',
+};
+
+function getCloudinaryFolder(uploadType) {
+  return UPLOAD_FOLDERS[uploadType] || UPLOAD_FOLDERS.portfolio;
+}
+
+// =============================================
+// Cloudinary Multer Storage
+// =============================================
+// resource_type:'auto' handles both images and videos transparently.
+// The folder is resolved lazily from req.query.upload_type at upload time.
+const cloudinaryStorage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, _file) => {
     const uploadType = req.query.upload_type || 'portfolio';
-    let dest = portfolioDir;
-    if (uploadType === 'announcements') dest = announcementsDir;
-    else if (uploadType === 'events')   dest = eventsDir;
-    cb(null, dest);
+    return {
+      folder:        getCloudinaryFolder(uploadType),
+      resource_type: 'auto',
+      // Let Cloudinary keep the original extension via format:'auto'
+      // and generate a unique public_id from the original filename.
+      use_filename:    true,
+      unique_filename: true,
+      overwrite:       false,
+    };
   },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
 });
 
 const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 },
+  storage: cloudinaryStorage,
+  limits:  { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       'image/jpeg', 'image/png', 'image/webp', 'image/gif',
@@ -58,6 +84,47 @@ const upload = multer({
     else cb(new Error('Invalid file type. Only images and videos are allowed.'));
   }
 });
+
+// =============================================
+// Helper: resolve a stored URL/path to a fully
+// qualified URL, supporting both Cloudinary URLs
+// and legacy /uploads/... local paths.
+// =============================================
+function resolveMediaUrl(storedPath) {
+  if (!storedPath) return null;
+  // Already a full URL (Cloudinary or external)
+  if (storedPath.startsWith('http://') || storedPath.startsWith('https://')) {
+    return storedPath;
+  }
+  // Legacy local path — point back to the backend for static serve fallback.
+  // e.g. /uploads/events/1234-file.jpg
+  const backendBase = process.env.BACKEND_URL || '';
+  return `${backendBase}${storedPath.startsWith('/') ? '' : '/'}${storedPath}`;
+}
+
+// =============================================
+// Helper: stream a URL into an archiver entry
+// Returns a Promise that resolves when the entry
+// is fully piped.
+// =============================================
+function addRemoteFileToArchive(archive, url, filename) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https://') ? https : http;
+    mod.get(url, (response) => {
+      if (response.statusCode !== 200) {
+        console.warn(`[ZIP] Skipping ${filename}: HTTP ${response.statusCode}`);
+        response.resume();
+        return resolve();
+      }
+      archive.append(response, { name: filename });
+      response.on('end', resolve);
+      response.on('error', reject);
+    }).on('error', (err) => {
+      console.warn(`[ZIP] Failed to fetch ${filename}:`, err.message);
+      resolve(); // don't abort the whole zip
+    });
+  });
+}
 
 // =============================================
 // CORS
@@ -91,13 +158,24 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-app.use('/uploads', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-}, express.static(uploadsDir));
+// Legacy /uploads static handler — serves any files still on disk from
+// before the Cloudinary migration. New uploads go to Cloudinary and return
+// full https:// URLs, so this only matters for old MongoDB records.
+// On Render the uploads/ folder is ephemeral; remove this block once all
+// legacy paths have been re-uploaded through the admin panel.
+try {
+  const fs   = require('fs');
+  const path = require('path');
+  const legacyUploads = path.join(__dirname, 'uploads');
+  if (fs.existsSync(legacyUploads)) {
+    app.use('/uploads', (req, res, next) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      if (req.method === 'OPTIONS') return res.sendStatus(200);
+      next();
+    }, require('express').static(legacyUploads));
+    console.log('[Legacy] Serving /uploads from disk for backward compat');
+  }
+} catch (_) { /* ignore if directory absent */ }
 
 // =============================================
 // Session — backed by MongoDB via connect-mongo
@@ -512,21 +590,43 @@ app.get('/api/admin/dashboard', requireAdmin, asyncHandler(async (_req, res) => 
 }));
 
 // =============================================
-// File Upload Endpoints
+// File Upload Endpoints (Cloudinary)
 // =============================================
+// Multer + CloudinaryStorage handles the actual upload.
+// req.file.path  → Cloudinary secure URL  (used as file_url)
+// req.file.filename → Cloudinary public_id (used as filename for backward compat)
 app.post('/api/upload', upload.single('file'), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
-  const uploadType = req.query.upload_type || req.body.upload_type || 'portfolio';
-  const fileUrl    = `/uploads/${uploadType}/${req.file.filename}`;
-  res.json({ success: true, message: 'File uploaded successfully', file_url: fileUrl, filename: req.file.filename });
+
+  // CloudinaryStorage sets:
+  //   req.file.path      = secure Cloudinary URL
+  //   req.file.filename  = public_id
+  const fileUrl   = req.file.path;     // https://res.cloudinary.com/...
+  const publicId  = req.file.filename; // 4k-production/portfolio/<id>
+
+  res.json({
+    success:    true,
+    message:    'File uploaded successfully',
+    file_url:   fileUrl,
+    filename:   publicId,
+    public_id:  publicId,  // extra field for future Cloudinary admin use
+  });
 }));
 
 app.post('/api/upload/multiple', upload.array('files', 20), asyncHandler(async (req, res) => {
   if (!req.files || req.files.length === 0)
     return res.status(400).json({ success: false, message: 'No files uploaded' });
-  const uploadType = req.query.upload_type || req.body.upload_type || 'events';
-  const fileUrls   = req.files.map(f => `/uploads/${uploadType}/${f.filename}`);
-  res.json({ success: true, message: 'Files uploaded successfully', file_urls: fileUrls, filenames: req.files.map(f => f.filename) });
+
+  const fileUrls  = req.files.map(f => f.path);      // Cloudinary secure URLs
+  const publicIds = req.files.map(f => f.filename);  // Cloudinary public_ids
+
+  res.json({
+    success:    true,
+    message:    'Files uploaded successfully',
+    file_urls:  fileUrls,
+    filenames:  publicIds,
+    public_ids: publicIds,  // extra field for future Cloudinary admin use
+  });
 }));
 
 // =============================================
@@ -827,21 +927,49 @@ app.get('/api/events/:idOrSlug/download-all', asyncHandler(async (req, res) => {
   res.attachment(zipName);
   archive.pipe(res);
 
-  photos.forEach(photoPath => {
-    let absolutePath;
-    if (photoPath.startsWith('/uploads/'))      absolutePath = path.join(uploadsDir, photoPath.substring(9));
-    else if (photoPath.startsWith('uploads/'))  absolutePath = path.join(uploadsDir, photoPath.substring(8));
-    else                                         absolutePath = path.join(uploadsDir, photoPath);
-
-    if (fs.existsSync(absolutePath)) {
-      archive.file(absolutePath, { name: path.basename(photoPath) });
-    } else {
-      const eventSpecificPath = path.join(eventsDir, path.basename(photoPath));
-      if (fs.existsSync(eventSpecificPath)) archive.file(eventSpecificPath, { name: path.basename(photoPath) });
-      else console.warn(`File not found for ZIP: ${absolutePath}`);
+  // Handle archive errors so the response doesn't hang on network issues
+  archive.on('error', (err) => {
+    console.error('[ZIP] Archive error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: 'Failed to create ZIP archive' });
     }
   });
 
+  // Collect all streaming promises so we can await them before finalize()
+  const streamTasks = [];
+
+  for (const photoEntry of photos) {
+    const filename = path.basename(photoEntry.replace(/[?#].*$/, ''));
+
+    // ── Cloudinary / remote URL ──────────────────────────────────────
+    if (photoEntry.startsWith('http://') || photoEntry.startsWith('https://')) {
+      streamTasks.push(addRemoteFileToArchive(archive, photoEntry, filename));
+      continue;
+    }
+
+    // ── Legacy local path — try disk (ephemeral on Render) ──────────
+    const fs   = require('fs');
+    const legacyBase = path.join(__dirname, 'uploads');
+    let localPath;
+    if (photoEntry.startsWith('/uploads/'))     localPath = path.join(legacyBase, photoEntry.substring(9));
+    else if (photoEntry.startsWith('uploads/')) localPath = path.join(legacyBase, photoEntry.substring(8));
+    else                                         localPath = path.join(legacyBase, photoEntry);
+
+    if (fs.existsSync(localPath)) {
+      archive.file(localPath, { name: filename });
+    } else {
+      // Last resort: try resolving as a full URL via BACKEND_URL
+      const resolvedUrl = resolveMediaUrl(photoEntry);
+      if (resolvedUrl && resolvedUrl.startsWith('http')) {
+        streamTasks.push(addRemoteFileToArchive(archive, resolvedUrl, filename));
+      } else {
+        console.warn(`[ZIP] File not found, skipping: ${photoEntry}`);
+      }
+    }
+  }
+
+  // Wait for all remote streams before finalising
+  await Promise.all(streamTasks);
   await archive.finalize();
 }));
 
@@ -915,13 +1043,35 @@ app.use((_req, res) => res.status(404).json({ success: false, message: 'Route no
 // =============================================
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
-  console.error('Unhandled error:', err);
+  // Log the full error internally but never leak Cloudinary/internal details to clients.
+  console.error('Unhandled error:', err.message || err);
+
   if (err.code === 11000)          return res.status(409).json({ success: false, message: 'Duplicate entry' });
   if (err.code === 'ECONNREFUSED') return res.status(503).json({ success: false, message: 'Database unavailable' });
+
   if (err.message && err.message.includes('Invalid file type')) {
     return res.status(400).json({ success: false, message: err.message });
   }
-  res.status(err.status || 500).json({ success: false, message: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message });
+
+  // Multer errors (e.g. file too large)
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ success: false, message: 'File too large. Maximum size is 100 MB.' });
+  }
+  if (err.code && err.code.startsWith('LIMIT_')) {
+    return res.status(400).json({ success: false, message: 'Upload limit exceeded.' });
+  }
+
+  // Cloudinary errors — return a clean message without internal API details
+  if (err.http_code || (err.message && err.message.toLowerCase().includes('cloudinary'))) {
+    const status = err.http_code || 502;
+    return res.status(status).json({ success: false, message: 'Media upload failed. Please try again.' });
+  }
+
+  const isProd = process.env.NODE_ENV === 'production';
+  res.status(err.status || 500).json({
+    success: false,
+    message: isProd ? 'Internal server error' : (err.message || 'Internal server error'),
+  });
 });
 
 // =============================================
@@ -933,10 +1083,9 @@ async function start() {
   // Start HTTP server FIRST so Render always detects the port
   await new Promise((resolve) => {
     app.listen(PORT, () => {
-      console.log(`\n4K Production API v2.2 (MongoDB native) on port ${PORT}`);
+      console.log(`\n4K Production API v2.3 (MongoDB + Cloudinary) on port ${PORT}`);
       console.log('Desktop auto-auth: ' + (process.env.DESKTOP_AUTH_TOKEN ? 'ENABLED ✓' : 'NOT CONFIGURED'));
-      console.log('File uploads: ENABLED ✓');
-      console.log(`Uploads directory: ${uploadsDir}`);
+      console.log('File uploads: Cloudinary ✓ (cloud: ' + process.env.CLOUDINARY_CLOUD_NAME + ')');
       resolve();
     });
   });

@@ -78,6 +78,8 @@ import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { eventsApi } from '@/services/api.js'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal, refresh } = useScrollReveal()
 const router = useRouter()
@@ -86,12 +88,6 @@ const loading = ref(true)
 const sharedEventId = ref(null)
 const toastMsg = ref('')
 
-const getMediaUrl = (url) => {
-  if (!url) return 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622?w=800';
-  if (url.startsWith('http')) return url;
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  return `${baseUrl}${url}`;
-};
 
 async function loadEvents() {
   try {

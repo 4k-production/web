@@ -144,7 +144,7 @@
                     <p>Click or drag image here to upload</p>
                   </div>
                   <div v-else class="media-preview">
-                    <img :src="form.image_url" alt="Preview" />
+                    <img :src="getMediaUrl(form.image_url)" alt="Preview" />
                     <div class="media-preview-overlay">
                       <span>{{ uploading ? 'Uploading...' : 'Click to change image' }}</span>
                     </div>
@@ -198,7 +198,7 @@
               </button>
             </div>
             <div class="adm-modal-body adm-view-body">
-              <img v-if="viewItem.image_url" :src="viewItem.image_url" class="adm-view-image" alt=""/>
+              <img v-if="viewItem.image_url" :src="getMediaUrl(viewItem.image_url)" class="adm-view-image" alt=""/>
               <div class="adm-view-meta">
                 <span class="adm-category-tag">{{ viewItem.category }}</span>
                 <StatusBadge :status="viewItem.status || 'published'" />
@@ -227,6 +227,8 @@ import { ref, computed, onMounted, inject } from 'vue'
 import StatusBadge  from '../components/StatusBadge.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { adminAnnouncementsApi, uploadApi } from '../services/adminApi.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const items = ref([]); const loading = ref(true); const search = ref('')
 const activeFilter = ref('all'); const showForm = ref(false); const showView = ref(false)

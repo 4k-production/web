@@ -160,6 +160,8 @@
 import { ref, onMounted } from 'vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { adminEventsApi, uploadApi } from '../services/adminApi.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const events = ref([]); const loading = ref(true)
 const showForm = ref(false); const showConfirm = ref(false)
@@ -171,12 +173,6 @@ const uploading = ref(false)
 const emptyForm = () => ({ event_name:'', client_name:'', event_date:'', video_url:'', photos:[] })
 const form = ref(emptyForm())
 
-const getMediaUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http')) return url;
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  return `${baseUrl}${url}`;
-};
 
 function formatDate(d) { return d ? new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—' }
 

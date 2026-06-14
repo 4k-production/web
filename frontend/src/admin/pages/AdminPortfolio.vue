@@ -204,6 +204,8 @@
 import { ref, computed, onMounted } from 'vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { adminPortfolioApi, uploadApi } from '../services/adminApi.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const items = ref([]); const loading = ref(true); const search = ref('')
 const showForm = ref(false); const showConfirm = ref(false)
@@ -215,12 +217,6 @@ const uploading = ref(false)
 const emptyForm = () => ({ title:'', category:'', description:'', media_url:'', thumbnail:'', media_type:'image', client:'', is_featured:false })
 const form = ref(emptyForm())
 
-const getMediaUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http')) return url;
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  return `${baseUrl}${url}`;
-};
 
 const filtered = computed(() => {
   if (!search.value.trim()) return items.value

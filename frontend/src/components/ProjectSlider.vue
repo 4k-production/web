@@ -159,6 +159,8 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { portfolioApi } from '@/services/api.js'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal } = useScrollReveal()
 
@@ -174,12 +176,6 @@ const SLIDE_DURATION = 5000  // ms per slide
 const TICK           = 50    // ms progress update interval
 const fallbackImg    = 'https://images.unsplash.com/photo-1440404653325-ab127d49abc1?w=900'
 
-const getMediaUrl = (url) => {
-  if (!url) return ''
-  if (url.startsWith('http')) return url
-  const baseUrl = import.meta.env.VITE_API_URL || ''
-  return `${baseUrl}${url}`
-}
 
 // For preview/thumbnail display: videos show their thumbnail image, images show media_url
 const getPreviewUrl = (slide) => {

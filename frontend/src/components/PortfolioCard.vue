@@ -70,6 +70,8 @@
 </template>
 
 <script setup>
+import { resolveMediaUrl as getMediaUrl } from '@/utils/resolveMediaUrl'
+
 defineProps({
   item:  { type: Object,  required: true },
   delay: { type: Number,  default: 1 }
@@ -77,12 +79,6 @@ defineProps({
 
 defineEmits(['open'])
 
-const getMediaUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http')) return url;
-  const baseUrl = import.meta.env.VITE_API_URL || '';
-  return `${baseUrl}${url}`;
-};
 
 // For display: videos use thumbnail image if available, else fall back to media_url
 const getPreviewUrl = (item) => {

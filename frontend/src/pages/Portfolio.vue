@@ -163,6 +163,8 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import PortfolioCard from '@/components/PortfolioCard.vue'
 import { portfolioApi } from '@/services/api.js'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
+import { resolveMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal, refresh } = useScrollReveal()
 
@@ -205,12 +207,6 @@ async function loadPortfolio() {
   }
 }
 
-function resolveMediaUrl(url) {
-  if (!url) return ''
-  if (url.startsWith('http')) return url
-  const base = import.meta.env.VITE_API_URL || ''
-  return `${base}${url}`
-}
 
 async function setCategory(cat) {
   activeCategory.value = cat

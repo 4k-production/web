@@ -155,6 +155,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
 import { portfolioApi } from '@/services/api.js'
+import { resolveMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal } = useScrollReveal()
 onMounted(() => {
@@ -166,12 +168,6 @@ const fallbackImg   = 'https://images.unsplash.com/photo-1440404653325-ab127d49a
 const lightboxItem  = ref(null)
 const activeCat     = ref('all')
 
-function resolveMediaUrl(url) {
-  if (!url) return ''
-  if (url.startsWith('http')) return url
-  const base = import.meta.env.VITE_API_URL || ''
-  return `${base}${url}`
-}
 
 // ─── Category filter tabs ───────────────────────
 const categories = [

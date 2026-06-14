@@ -288,6 +288,8 @@ import PortfolioCard    from '@/components/PortfolioCard.vue'
 import AnnouncementCard from '@/components/AnnouncementCard.vue'
 import { portfolioApi, announcementsApi } from '@/services/api.js'
 import { useScrollReveal } from '@/composables/useScrollReveal.js'
+import { resolveMediaUrl } from '@/utils/resolveMediaUrl'
+
 
 const { initReveal, refresh } = useScrollReveal()
 
@@ -383,13 +385,6 @@ async function loadAnnouncements() {
     await nextTick()
     refresh()
   }
-}
-
-function resolveMediaUrl(url) {
-  if (!url) return ''
-  if (url.startsWith('http')) return url
-  const base = import.meta.env.VITE_API_URL || ''
-  return `${base}${url}`
 }
 
 function openLightbox(item) {
